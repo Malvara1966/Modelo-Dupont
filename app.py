@@ -1,130 +1,155 @@
 # main_dupont_streamlit.py
 import streamlit as st
 import pandas as pd
+from io import BytesIO
 
+# Cálculo DuPont triple
 def duPont_triple(util_neta, ventas, activos_totales, capital_contable):
-    margen_utilidad = util_neta / ventas
-    rotacion_activos = ventas / activos_totales
-    apalancamiento = activos_totales / capital_contable
-    roe = margen_utilidad * rotacion_activos * apalancamiento
+    # Evitar división por cero
+    margen_utilidad = (util_neta / ventas) if ventas != 0 else None
+    rotacion_activos = (ventas / activos_totales) if activos_totales != 0 else None
+    apalancamiento = (activos_totales / capital_contable) if capital_contable != 0 else None
+    roe = (
+        margen_utilidad * rotacion_activos * apalancamiento
+        if None not in (margen_utilidad, rotacion_activos, apalancamiento)
+        else None
+    )
     return margen_utilidad, rotacion_activos, apalancamiento, roe
 
+# Cargar Excel subido
 def cargar_datos_desde_excel(uploaded_file):
-    df = pd.read_excel(uploaded_file, header=0)
-    return df
+    # Leer con pandas; exige que el archivo sea .xlsx/.xlsm y que openpyxl esté disponible
+    try:
+        df = pd.read_excel(uploaded_file, header=0, engine="openpyxl")
+        return df
+    except Exception as e:
+        raise e
 
-def extraer_periodos(df):
-    # Periodos son las columnas distintas (ej.: 2023, 2024, etc.)
-    periodos = sorted([col for col in df.columns if col not in ["Empresa", "Empresa"].__class__.__name__])
-    # El filtrado anterior se ajusta si tienes una columna de etiqueta como "Empresa"
-    # En este caso asumimos que las columnas que no son renglones/conceptos pueden ser periodos
-    # Mejor: tomamos todas las columnas excepto las filas que describen los conceptos por fila
+# Detectar periodos a partir de columnas (asumiendo que hay columna "Concepto" o filas por concepto)
+def detectar_periodos(df):
+    # Si hay columna llamada "Concepto", asumimos formato ancho donde cada columna distinta es un periodo
+    if "Concepto" in df.columns:
+        periodos = [col for col in df.columns if col != "Concepto"]
+        return periodos
+    # Si no hay columna Concepto, asumimos que cada fila es un periodo (menos cabeceras)
+    # En este caso, devolveremos las columnas menos las conocidas (por ejemplo "Empresa" si existe)
+    periodos = [col for col in df.columns if col not in ["Empresa"]]
     return periodos
 
-def base_conceptos():
-    # Nombres de las filas (renglones) que contienen los conceptos
+# Conceptos esperados (filas)
+def conceptos_base():
     return ["Ventas Netas", "Utilidad Neta", "Activo Total", "Capital Contable"]
 
-def formato_resultados(df, periodos, conceptos):
+# Construcción del reporte final
+def generar_reporte(df, periodos, empresa_nombre="Empresa_1"):
     resultados = []
-    # Recorremos cada periodo y cada empresa (fila) para obtener columnas por periodo
-    for idx, row in df.iterrows():
-        empresa = row.get("Empresa", f"Empresa_{idx+1}")
+    # Si el archivo está en formato ancho con una fila por concepto
+    # intentamos extraer por periodo buscando cada concepto en la fila correspondiente.
+    # Si hay columna "Concepto", usamos esa columna para filtrar.
+    if "Concepto" in df.columns:
         for periodo in periodos:
-            # Las celdas por periodo para cada concepto están organizadas como filas
-            # Buscamos el valor en la fila de concepto para ese periodo
+            try:
+                v = df.loc[df["Concepto"] == "Ventas Netas", periodo].values
+                u = df.loc[df["Concepto"] == "Utilidad Neta", periodo].values
+                a = df.loc[df["Concepto"] == "Activo Total", periodo].values
+                c = df.loc[df["Concepto"] == "Capital Contable", periodo].values
+                # Tomamos el primer valor si existe
+                v = float(v[0]) if len(v) > 0 and pd.notna(v[0]) else None
+                u = float(u[0]) if len(u) > 0 and pd.notna(u[0]) else None
+                a = float(a[0]) if len(a) > 0 and pd.notna(a[0]) else None
+                c = float(c[0]) if len(c) > 0 and pd.notna(c[0]) else None
+            except Exception:
+                v = u = a = c = None
+
+            if None not in (v, u, a, c) and v != 0 and a != 0 and c != 0:
+                margen, rot, apal, roe = duPont_triple(u, v, a, c)
+                if None not in (margen, rot, apal, roe):
+                    resultados.append({
+                        "Empresa": empresa_nombre,
+                        "Periodo": periodo,
+                        "Ventas Netas": v,
+                        "Utilidad Neta": u,
+                        "Activo Total": a,
+                        "Capital Contable": c,
+                        "Margen_utilidad_neta": margen,
+                        "Rotacion_activos": rot,
+                        "Apalancamiento": apal,
+                        "ROE": roe
+                    })
+        df_result = pd.DataFrame(resultados)
+        return df_result
+    else:
+        # Caso alternativo: filas por concepto y columnas por periodo
+        # extraemos por periodo buscando filas y columnas correspondientes
+        periodos = [p for p in periodos]
+        for periodo in periodos:
             try:
                 v = df.loc[df["Concepto"] == "Ventas Netas", periodo].values[0]
                 u = df.loc[df["Concepto"] == "Utilidad Neta", periodo].values[0]
                 a = df.loc[df["Concepto"] == "Activo Total", periodo].values[0]
                 c = df.loc[df["Concepto"] == "Capital Contable", periodo].values[0]
+                if pd.notna(v) and pd.notna(u) and pd.notna(a) and pd.notna(c) and v != 0 and a != 0 and c != 0:
+                    margen, rot, apal, roe = duPont_triple(float(u), float(v), float(a), float(c))
+                    resultados.append({
+                        "Empresa": empresa_nombre,
+                        "Periodo": periodo,
+                        "Ventas Netas": v,
+                        "Utilidad Neta": u,
+                        "Activo Total": a,
+                        "Capital Contable": c,
+                        "Margen_utilidad_neta": margen,
+                        "Rotacion_activos": rot,
+                        "Apalancamiento": apal,
+                        "ROE": roe
+                    })
             except Exception:
-                # Si la estructura difiere, saltar ese periodo
                 continue
+        df_result = pd.DataFrame(resultados)
+        return df_result
 
-            if pd.notna(v) and pd.notna(u) and pd.notna(a) and pd.notna(c) and v != 0 and a != 0 and c != 0:
-                margen, rot, apal, roe = duPont_triple(u, v, a, c)
-                resultados.append({
-                    "Empresa": empresa,
-                    "Periodo": periodo,
-                    "Ventas Netas": v,
-                    "Utilidad Neta": u,
-                    "Activo Total": a,
-                    "Capital Contable": c,
-                    "Margen_utilidad_neta": margen,
-                    "Rotacion_activos": rot,
-                    "Apalancamiento": apal,
-                    "ROE": roe
-                })
-    return pd.DataFrame(resultados)
-
+# Interfaz principal
 def main():
-    st.title("Análisis DuPont - Cálculo pormenorizado (renglones = conceptos, columnas = periodos)")
-    st.write("Lectura de Excel: filas = conceptos (Ventas Netas, Utilidad Neta, Activo Total, Capital Contable); columnas = periodos (años/meses).")
+    st.title("DuPont - Cálculo por periodo (renglones = conceptos, columnas = periodos)")
+    st.write("Lectura de Excel: filas = conceptos (Ventas Netas, Utilidad Neta, Activo Total, Capital Contable); columnas = periodos.")
 
-    uploaded = st.file_uploader("Carga tu Excel (.xlsx)", type=["xlsx", "xlsm"])
+    uploaded = st.file_uploader("Carga tu Excel (.xlsx/.xlsm)", type=["xlsx", "xlsm"])
     if uploaded is None:
         st.info("Por favor, carga un archivo de Excel para continuar.")
         return
 
-    df = cargar_datos_desde_excel(uploaded)
-
-    # Esperamos una columna 'Concepto' para distinguir renglones y una columna 'Empresa' opcional
-    # Si tu archivo ya está en formato limpio, adapta las columnas accordingly.
-    if "Concepto" in df.columns:
-        # ya está en formato largo: fila por concepto, columna por periodo
-        # Transforma a formato ancho para calcular por periodo
-        periodos = [c for c in df.columns if c not in ["Concepto"]]
-    else:
-        # Si no hay columna Concepto, asumimos que las primeras filas definen conceptos
-        # Este caso requiere estructura específica; para robustez, solicita formato estandarizado.
-        st.error("Formato de archivo no reconocido: se espera columna 'Concepto'.")
+    try:
+        df = cargar_datos_desde_excel(uploaded)
+    except Exception as e:
+        st.error(f"Error leyendo el Excel: {e}")
         return
 
-    conceptos = base_conceptos()
-    df_formato = df.copy()
-    # Genera el reporte suponiendo que cada fila es un concepto y las columnas son periodos
-    # Necesitamos convertir a formato donde cada periodo por fila se calcule; aquí asumimos ya en ancho.
-    # Reorganizamos para obtener por periodo usando la fila de cada concepto.
-    # Crear DF de resultados
-    resultados = []
-    periodos = [col for col in df.columns if col != "Concepto"]
+    # Detección de periodos
+    periodos = detectar_periodos(df)
+    # Si se detecta una columna de empresa, se puede adaptar; por ahora usaremos un nombre por defecto
+    empresa = "Empresa_1"
 
-    for periodo in periodos:
+    # Generar reporte
+    with st.spinner("Calculando DuPont por periodo..."):
         try:
-            v = df.loc[df["Concepto"] == "Ventas Netas", periodo].iloc[0]
-            u = df.loc[df["Concepto"] == "Utilidad Neta", periodo].iloc[0]
-            a = df.loc[df["Concepto"] == "Activo Total", periodo].iloc[0]
-            c = df.loc[df["Concepto"] == "Capital Contable", periodo].iloc[0]
-            if all(pd.notna(x) for x in [v, u, a, c]) and v != 0 and a != 0 and c != 0:
-                margen, rot, apal, roe = duPont_triple(u, v, a, c)
-                resultados.append({
-                    "Empresa": "Empresa_1",  # si tienes nombre por fila, ajusta aquí
-                    "Periodo": periodo,
-                    "Ventas Netas": v,
-                    "Utilidad Neta": u,
-                    "Activo Total": a,
-                    "Capital Contable": c,
-                    "Margen_utilidad_neta": margen,
-                    "Rotacion_activos": rot,
-                    "Apalancamiento": apal,
-                    "ROE": roe
-                })
-        except Exception:
-            continue
+            df_result = generar_reporte(df, periodos, empresa_nombre=empresa)
+        except Exception as e:
+            st.error(f"Error al generar reporte: {e}")
+            return
 
-    df_result = pd.DataFrame(resultados)
+    if df_result is None or df_result.empty:
+        st.warning("No se pudo generar un reporte. Verifique el formato del archivo.")
+        return
 
     st.subheader("Reporte DuPont por periodo")
     st.dataframe(df_result)
 
-    csv = df_result.to_csv(index=False).encode('utf-8')
+    # Descargas
+    csv = df_result.to_csv(index=False).encode("utf-8")
     st.download_button(label="Descargar CSV", data=csv, file_name="dupont_reporte.csv", mime="text/csv")
 
-    # Nota: para Excel, puede generarse en memoria usando io.BytesIO
-    import io
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+    # Excel en memoria
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df_result.to_excel(writer, index=False, sheet_name="DuPont")
     excel_data = output.getvalue()
     st.download_button(label="Descargar Excel", data=excel_data,
